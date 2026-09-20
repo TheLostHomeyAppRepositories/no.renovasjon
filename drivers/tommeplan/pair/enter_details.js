@@ -12,6 +12,12 @@
   const adressekode = document.getElementById('adressekode');
   const kommunenavn = document.getElementById('kommunenavn');
   const kommunenummer = document.getElementById('kommunenummer');
+  // Cadastral fields, handled the same way as the fields above
+  const cadastralFields = ['gardsnummer', 'bruksnummer', 'festenummer'];
+  const cadastralInputs = {};
+  cadastralFields.forEach((field) => {
+    cadastralInputs[field] = document.getElementById(field);
+  });
 
   let timer = null;
   const delay = 300;
@@ -46,6 +52,9 @@
           if (addr.adressekode) opt.setAttribute('data-adressekode', addr.adressekode);
           if (addr.kommunenavn) opt.setAttribute('data-kommunenavn', addr.kommunenavn);
           if (addr.kommunenummer !== undefined) opt.setAttribute('data-kommunenummer', String(addr.kommunenummer));
+          cadastralFields.forEach((field) => {
+            if (addr[field] !== undefined && addr[field] !== null) opt.setAttribute(`data-${field}`, String(addr[field]));
+          });
           list.appendChild(opt);
         }
       });
@@ -67,6 +76,9 @@
     adressekode.value = matched.getAttribute('data-adressekode') || '';
     kommunenavn.value = matched.getAttribute('data-kommunenavn') || '';
     kommunenummer.value = matched.getAttribute('data-kommunenummer') || '';
+    cadastralFields.forEach((field) => {
+      cadastralInputs[field].value = matched.getAttribute(`data-${field}`) || '';
+    });
     return true;
   }
 
@@ -77,6 +89,9 @@
     adressekode.value = '';
     kommunenavn.value = '';
     kommunenummer.value = '';
+    cadastralFields.forEach((field) => {
+      cadastralInputs[field].value = '';
+    });
   }
 
   input.addEventListener('input', () => {
@@ -101,14 +116,18 @@
   });
 
   async function saveAndContinue() {
-    await Homey.emit('save_details', {
+    const details = {
       adressenavn: adressenavn.value,
       nummer: nummer.value,
       bokstav: bokstav.value,
       adressekode: adressekode.value,
       kommunenavn: kommunenavn.value,
       kommunenummer: kommunenummer.value,
+    };
+    cadastralFields.forEach((field) => {
+      details[field] = cadastralInputs[field].value;
     });
+    await Homey.emit('save_details', details);
     Homey.showView('list_devices');
   }
 

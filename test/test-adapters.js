@@ -85,6 +85,9 @@ async function getRandomAddress(municipalityNumber, maxRetries = 5) {
         adressekode: addrElement.adressekode,
         kommunenavn: addrElement.kommunenavn,
         kommunenummer: addrElement.kommunenummer,
+        gardsnummer: addrElement.gardsnummer,
+        bruksnummer: addrElement.bruksnummer,
+        festenummer: addrElement.festenummer,
       };
     }
   }

@@ -2,6 +2,14 @@
 
 const Homey = require('homey');
 
+// MIGRATION (cadastral fields): temporary, delete together with the rest of it once all devices
+// have the fields. Search for "MIGRATION (cadastral" to find every part.
+const { hasCadastralFields, lookupCadastral } = require('../../lib/geonorge');
+
+// MIGRATION (cadastral fields)
+// Seconds to wait before retrying a failed cadastral lookup. The last delay repeats.
+const CADASTRAL_RETRY_DELAYS = [60, 5 * 60, 15 * 60, 60 * 60];
+
 const CAPABILITIES_TO_MIGRATE = [
   'pickup_next_date',
   'pickup_next_days',
@@ -26,6 +34,9 @@ module.exports = class RenovasjonDevice extends Homey.Device {
     this.adapter = this.driver.getAdapter(this.getStoreValue('provider'));
     // Update data if the device exists. If not it will be updated in onAdded() after setup.
     if (this.getStoreValue('deviceAdded')) {
+      // MIGRATION (cadastral fields)
+      // Runs in the background so it can never delay or break the rest of the setup
+      this.startCadastralMigration();
       await this.ensureCapabilities();
       await this.updateData();
       await this.updateCapabilities();
@@ -208,7 +219,64 @@ module.exports = class RenovasjonDevice extends Homey.Device {
     this.homey.api.realtime('dataUpdated', { deviceId: this.getId() });
   }
 
+  // MIGRATION (cadastral fields): the three methods below, startCadastralMigration(),
+  // ensureCadastralData() and scheduleCadastralRetry(), are temporary.
+  // Devices added before the cadastral fields were stored get them from a Geonorge lookup. Only the
+  // missing fields are added, and nothing is written unless exactly one property matches.
+  startCadastralMigration() {
+    this.ensureCadastralData().catch((error) => {
+      this.error('Cadastral data migration failed:', error.message);
+    });
+  }
+
+  async ensureCadastralData() {
+    if (this._cadastralMigrationRunning) {
+      return;
+    }
+    const addressData = this.getStoreValue('addressData');
+    if (!addressData || hasCadastralFields(addressData)) {
+      return;
+    }
+
+    this._cadastralMigrationRunning = true;
+    try {
+      const result = await lookupCadastral(addressData);
+      if (result.status !== 'found') {
+        // Not something a quick retry would fix. The daily update tries again.
+        this.log(`Could not determine cadastral data (${result.status})`);
+        return;
+      }
+      // Read the store again, and add to that, so nothing else that changed meanwhile is lost
+      const current = JSON.parse(JSON.stringify(this.getStoreValue('addressData') || addressData));
+      Object.assign(current, result.fields);
+      await this.setStoreValue('addressData', current);
+      this._cadastralRetries = 0;
+      this.log('Stored cadastral data for the address');
+    } catch (error) {
+      this.error('Cadastral data lookup failed, will retry:', error.message);
+      this.scheduleCadastralRetry();
+    } finally {
+      this._cadastralMigrationRunning = false;
+    }
+  }
+
+  scheduleCadastralRetry() {
+    if (this._cadastralTimer) {
+      return;
+    }
+    const attempt = this._cadastralRetries || 0;
+    this._cadastralRetries = attempt + 1;
+    const seconds = CADASTRAL_RETRY_DELAYS[Math.min(attempt, CADASTRAL_RETRY_DELAYS.length - 1)];
+    this._cadastralTimer = this.homey.setTimeout(() => {
+      this._cadastralTimer = null;
+      this.startCadastralMigration();
+    }, seconds * 1000);
+  }
+
   async update(isRetry = false) {
+    // MIGRATION (cadastral fields): also retried on every daily update
+    this.startCadastralMigration();
+
     if (this._retryTimer) {
       this.homey.clearTimeout(this._retryTimer);
       this._retryTimer = null;
@@ -238,6 +306,11 @@ module.exports = class RenovasjonDevice extends Homey.Device {
     if (this._retryTimer) {
       this.homey.clearTimeout(this._retryTimer);
       this._retryTimer = null;
+    }
+    // MIGRATION (cadastral fields)
+    if (this._cadastralTimer) {
+      this.homey.clearTimeout(this._cadastralTimer);
+      this._cadastralTimer = null;
     }
   }
 

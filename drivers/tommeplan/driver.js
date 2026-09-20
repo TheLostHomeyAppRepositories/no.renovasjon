@@ -2,6 +2,8 @@
 
 const Homey = require('homey');
 
+const { normalizeCadastral } = require('../../lib/geonorge');
+
 // Adapters are required lazily, so only the ones actually in use get loaded.
 /* eslint-disable global-require */
 const ADAPTER_FACTORIES = {
@@ -117,7 +119,8 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
   async onPair(session) {
     let addressData = null;
     session.setHandler('save_details', async (data) => {
-      addressData = data;
+      // The pair view sends the cadastral fields as strings. Store them as numbers (or null).
+      addressData = Object.assign(data, normalizeCadastral(data));
     });
 
     session.setHandler('list_devices', async () => {
