@@ -33,6 +33,7 @@ const adapterConfigs = [
 
 const adapters = {};
 for (const cfg of adapterConfigs) {
+  // eslint-disable-next-line global-require, import/no-dynamic-require
   const AdapterClass = require(`../lib/adapters/${cfg.name}`);
   adapters[cfg.name] = {
     adapter: new AdapterClass(),

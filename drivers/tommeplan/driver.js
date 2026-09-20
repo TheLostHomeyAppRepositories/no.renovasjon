@@ -2,6 +2,8 @@
 
 const Homey = require('homey');
 
+// Adapters are required lazily, so only the ones actually in use get loaded.
+/* eslint-disable global-require */
 const ADAPTER_FACTORIES = {
   remidt: () => new (require('../../lib/adapters/remidt'))(),
   trv: () => new (require('../../lib/adapters/trv'))(),
@@ -32,6 +34,7 @@ const ADAPTER_FACTORIES = {
   las: () => new (require('../../lib/adapters/las'))(),
   karmoykommune: () => new (require('../../lib/adapters/karmoykommune'))(),
 };
+/* eslint-enable global-require */
 
 module.exports = class RenovasjonDriver extends Homey.Driver {
 
@@ -39,13 +42,13 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
     const utcFuture = Date.UTC(
       dateFuture.getFullYear(),
       dateFuture.getMonth(),
-      dateFuture.getDate()
+      dateFuture.getDate(),
     );
 
     const utcPast = Date.UTC(
       datePast.getFullYear(),
       datePast.getMonth(),
-      datePast.getDate()
+      datePast.getDate(),
     );
 
     return Math.floor((utcFuture - utcPast) / 86400000);
@@ -90,11 +93,11 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
         })
         .map(([key]) => key);
 
-      const translatedFractions = matchingFractions.map(key => args.device.homey.__(`fractions.${key}.medium`));
+      const translatedFractions = matchingFractions.map((key) => args.device.homey.__(`fractions.${key}.medium`));
       const pickupFractionsString = translatedFractions.join(', ');
 
       return {
-        pickup_fractions: pickupFractionsString
+        pickup_fractions: pickupFractionsString,
       };
     });
 
@@ -111,7 +114,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
     });
   }
 
-  async onPair(session){
+  async onPair(session) {
     let addressData = null;
     session.setHandler('save_details', async (data) => {
       addressData = data;
@@ -140,8 +143,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
         if (!addressUUID) {
           throw new Error(this.homey.__('pair.errors.unsupported_address'));
         }
-      }
-      catch (error) {
+      } catch (error) {
         // Network errors both logged to console and notified to user
         // NOTE: This assumes all errors are network errors, which is assuming a little too much.
         // Consider adding error type distinctions.
@@ -159,7 +161,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
           settings: {
             streetAddress: addrString,
             municipality: addressData.kommunenavn,
-            provider: adapter.getName()
+            provider: adapter.getName(),
           },
           store: {
             provider,
@@ -173,17 +175,19 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
 
   async onUninit() {
     if (this._midnightTimer) {
-      clearTimeout(this._midnightTimer);
+      this.homey.clearTimeout(this._midnightTimer);
     }
   }
 
   scheduleMidnightUpdate() {
     const now = new Date();
     // Set to five minutes past midnight
-    const millisTillMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()+1, 0, 5, 0, 0) - now;
-    this._midnightTimer = setTimeout(async () => {
-      this.getDevices().forEach(async (device) => {
-        await device.update();
+    const millisTillMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 5, 0, 0) - now;
+    this._midnightTimer = this.homey.setTimeout(async () => {
+      this.getDevices().forEach((device) => {
+        device.update().catch((error) => {
+          this.error('Midnight update failed:', error.message);
+        });
       });
       this.scheduleMidnightUpdate();
     }, millisTillMidnight);
@@ -194,8 +198,8 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
     return Object.keys(this.adapterFactories).map((id) => {
       const adapter = this.getAdapter(id);
       return {
-      id,
-      label: adapter.getName() || id,
+        id,
+        label: adapter.getName() || id,
       };
     });
   }
@@ -219,12 +223,11 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
   async getProviderForMunicipality(municipalityCode) {
     for (const id of Object.keys(this.adapterFactories)) {
       const adapter = this.getAdapter(id);
-      try{
+      try {
         if (await adapter.coversMunicipality(municipalityCode)) {
           return id;
         }
-      }
-      catch (error) {
+      } catch (error) {
         this.error(`Could not check coverage of ${adapter.getName()}:`, error.message);
       }
     }

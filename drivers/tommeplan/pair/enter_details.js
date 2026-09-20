@@ -1,3 +1,5 @@
+'use strict';
+
 // Debounced fetch of address suggestions from Geonorge on input.
 (() => {
   const input = document.getElementById('address');
@@ -56,7 +58,7 @@
   function populateHiddenFromValue(val) {
     if (!val) return false;
     const opts = Array.from(list.querySelectorAll('option'));
-    const matched = opts.find(o => o.value === val);
+    const matched = opts.find((o) => o.value === val);
     if (!matched) return false;
 
     adressenavn.value = matched.getAttribute('data-adressenavn') || '';
@@ -86,7 +88,7 @@
       if (!populateHiddenFromValue(q)) {
         // Clear any previously populated hidden fields when there's no exact match
         clearHiddenFields();
-        fetchSuggestions(q);
+        fetchSuggestions(q).catch((err) => console.error('Address lookup failed', err));
       }
     }, delay);
   });
@@ -98,28 +100,32 @@
     }
   });
 
-  button.addEventListener('click', async () => {
-    if (!kommunenummer.value) {
-      Homey.alert('Please fill in address', 'error');
-      return;
-    }
-
+  async function saveAndContinue() {
     await Homey.emit('save_details', {
       adressenavn: adressenavn.value,
       nummer: nummer.value,
       bokstav: bokstav.value,
       adressekode: adressekode.value,
       kommunenavn: kommunenavn.value,
-      kommunenummer: kommunenummer.value
+      kommunenummer: kommunenummer.value,
     });
     Homey.showView('list_devices');
+  }
+
+  button.addEventListener('click', () => {
+    if (!kommunenummer.value) {
+      Homey.alert('Please fill in address', 'error');
+      return;
+    }
+
+    saveAndContinue().catch((err) => console.error('Saving address details failed', err));
   });
 
   document.addEventListener('DOMContentLoaded', () => {
     // Set title to localized string
     document.title = Homey.__('pair.title');
     // Localize all elements with data-i18n attribute
-    document.querySelectorAll('[data-i18n]').forEach(function(element) {
+    document.querySelectorAll('[data-i18n]').forEach((element) => {
       const ref = element.getAttribute('data-i18n');
       element.textContent = Homey.__(ref);
     });
