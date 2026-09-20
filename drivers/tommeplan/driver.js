@@ -129,6 +129,11 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
       if (!provider) {
         throw new Error(this.homey.__('pair.errors.unsupported_municipality'));
       }
+      // No device id means an address without a street name, which no adapter can look up
+      const deviceId = this.getDeviceId(addressData);
+      if (!deviceId) {
+        throw new Error(this.homey.__('pair.errors.unsupported_address'));
+      }
       const adapter = this.getAdapter(provider);
 
       let addrString = addressData.adressenavn;
@@ -157,7 +162,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
         {
           name: `${baseName} ${addrString}`,
           data: {
-            id: addressUUID,
+            id: deviceId,
           },
           settings: {
             streetAddress: addrString,
@@ -172,6 +177,19 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
         },
       ];
     });
+  }
+
+  // The device id only identifies the address, so it doesn't depend on any adapter. It is fixed
+  // once the device has been created, so the format must not change. Returns null if a part is
+  // missing, which only happens for addresses without a street name.
+  getDeviceId(addressData) {
+    const parts = [addressData.kommunenummer, addressData.adressekode, addressData.nummer]
+      .map((part) => (part === undefined || part === null ? '' : String(part).trim()));
+    if (parts.some((part) => part === '')) {
+      return null;
+    }
+    const letter = String(addressData.bokstav || '').trim().toUpperCase();
+    return `${parts.join('/')}${letter}`;
   }
 
   async onUninit() {
