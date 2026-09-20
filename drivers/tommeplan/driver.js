@@ -139,16 +139,14 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
       let addressUUID;
       try {
         addressUUID = await adapter.fetchAddressUUID(addressData);
-        // If the address lookup failed, notify user
-        if (!addressUUID) {
-          throw new Error(this.homey.__('pair.errors.unsupported_address'));
-        }
       } catch (error) {
         // Network errors both logged to console and notified to user
-        // NOTE: This assumes all errors are network errors, which is assuming a little too much.
-        // Consider adding error type distinctions.
         this.error(`${adapter.getName()} could not fetch address UUID:`, error.message);
         throw new Error(this.homey.__('pair.errors.network_error'));
+      }
+      // If the address lookup failed, notify user
+      if (!addressUUID) {
+        throw new Error(this.homey.__('pair.errors.unsupported_address'));
       }
       const baseName = this.manifest.name[this.homey.i18n.getLanguage()] || this.manifest.name.en;
 
