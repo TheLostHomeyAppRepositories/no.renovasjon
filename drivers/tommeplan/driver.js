@@ -73,7 +73,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
           continue;
         }
         const diffDays = this.diffInCalendarDays(fractionDate, today);
-        if (diffDays == args.days) {
+        if (diffDays === Number(args.days)) {
           return true;
         }
       }
@@ -89,7 +89,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
         .filter(([_, fractionDate]) => {
           if (!fractionDate) return false;
           const diffDays = this.diffInCalendarDays(fractionDate, today);
-          return diffDays == args.days;
+          return diffDays === Number(args.days);
         })
         .map(([key]) => key);
 
@@ -110,7 +110,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
       }
       const today = new Date();
       const diffDays = this.diffInCalendarDays(fractionDate, today);
-      return diffDays == args.days;
+      return diffDays === Number(args.days);
     });
   }
 
