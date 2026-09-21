@@ -7,7 +7,7 @@
         "errors": {
             "unsupported_municipality": "The municipality does not yet appear to be supported.",
             "unsupported_address": "The municipality is supported, but the address search was unsuccessful.",
-            "network_error": "Network error. Check your connection or try again later."
+            "network_error": "Could not get a response from {{provider}}. Check your connection, and whether their app or website works. Try again later."
         }
   },
   "fractions": {

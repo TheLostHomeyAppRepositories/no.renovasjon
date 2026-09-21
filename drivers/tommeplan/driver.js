@@ -150,7 +150,7 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
       } catch (error) {
         // Network errors both logged to console and notified to user
         this.error(`${adapter.getName()} could not determine if address is covered:`, error.message);
-        throw new Error(this.homey.__('pair.errors.network_error'));
+        throw new Error(this.homey.__('pair.errors.network_error', { provider: adapter.getShortName() }));
       }
       // If the address coverage failed, notify user
       if (!addressCovered) {
