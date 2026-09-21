@@ -2,6 +2,8 @@
 
 const Homey = require('homey');
 
+const { AddressNotFoundError } = require('../../lib/errors');
+
 // MIGRATION (cadastral fields): temporary, delete together with the rest of it once all devices
 // have the fields. Search for "MIGRATION (cadastral" to find every part.
 const { hasCadastralFields, lookupCadastral } = require('../../lib/geonorge');
@@ -283,6 +285,11 @@ module.exports = class RenovasjonDevice extends Homey.Device {
     try {
       await this.updateData();
     } catch (error) {
+      // A retry won't make a missing address appear. The next daily update tries again.
+      if (error instanceof AddressNotFoundError) {
+        this.error('Address not found, not retrying:', error.message);
+        return;
+      }
       if (!isRetry) {
         this.error('Error updating data, retrying immediately:', error.message);
         await this.update(true);
