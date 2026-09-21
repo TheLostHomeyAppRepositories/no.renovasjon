@@ -2,6 +2,10 @@
   "extends": "athom/homey-app",
   "overrides": [
     {
+      "files": ["lib/errors.js"],
+      "rules": { "max-classes-per-file": "off" }
+    },
+    {
       "files": ["test/**/*.js"],
       "rules": { "no-console": "off", "no-process-exit": "off" }
     },

@@ -144,16 +144,16 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
         addrString += ` ${addressData.bokstav}`;
       }
 
-      let addressUUID;
+      let addressCovered;
       try {
-        addressUUID = await adapter.fetchAddressUUID(addressData);
+        addressCovered = await adapter.coversAddress(addressData);
       } catch (error) {
         // Network errors both logged to console and notified to user
-        this.error(`${adapter.getName()} could not fetch address UUID:`, error.message);
+        this.error(`${adapter.getName()} could not determine if address is covered:`, error.message);
         throw new Error(this.homey.__('pair.errors.network_error'));
       }
-      // If the address lookup failed, notify user
-      if (!addressUUID) {
+      // If the address coverage failed, notify user
+      if (!addressCovered) {
         throw new Error(this.homey.__('pair.errors.unsupported_address'));
       }
       const baseName = this.manifest.name[this.homey.i18n.getLanguage()] || this.manifest.name.en;
@@ -172,7 +172,6 @@ module.exports = class RenovasjonDriver extends Homey.Driver {
           store: {
             provider,
             addressData,
-            addressUUID,
           },
         },
       ];

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('node:util');
 const { adapters } = require('./adapters-config');
+const { normalizeCadastral } = require('../lib/geonorge');
 
 // --- Parse command line arguments ---
 let updateMode = false;
@@ -40,6 +41,22 @@ try {
 
 const addressesFile = path.join(__dirname, 'valid-addresses.json');
 
+// The address data as the pair view and driver produce it, which is what the adapters get in
+// production: the address fields as strings, empty when missing, and the cadastral fields as
+// numbers or null. Geonorge results and older stored addresses have numbers for some of them.
+function toPairedAddress(address) {
+  const text = (value) => (value === undefined || value === null ? '' : String(value));
+  const paired = {
+    adressenavn: text(address.adressenavn),
+    nummer: text(address.nummer),
+    bokstav: text(address.bokstav),
+    adressekode: address.adressekode ? String(address.adressekode) : '',
+    kommunenavn: text(address.kommunenavn),
+    kommunenummer: text(address.kommunenummer),
+  };
+  return Object.assign(paired, normalizeCadastral(address));
+}
+
 // --- Address storage ---
 function loadValidAddresses() {
   if (!fs.existsSync(addressesFile)) return {};
@@ -53,7 +70,7 @@ function saveValidAddresses(data) {
 const addressStore = {
   data: loadValidAddresses(),
   get(muni) {
-    return this.data[muni];
+    return this.data[muni] && toPairedAddress(this.data[muni]);
   },
   set(muni, addr) {
     this.data[muni] = addr;
@@ -78,17 +95,7 @@ async function getRandomAddress(municipalityNumber, maxRetries = 5) {
     const addrRespJson = await addrResp.json();
     const addrElement = addrRespJson.adresser[0];
     if (addrElement && addrElement.adressenavn) {
-      return {
-        adressenavn: addrElement.adressenavn,
-        nummer: addrElement.nummer,
-        bokstav: addrElement.bokstav,
-        adressekode: addrElement.adressekode,
-        kommunenavn: addrElement.kommunenavn,
-        kommunenummer: addrElement.kommunenummer,
-        gardsnummer: addrElement.gardsnummer,
-        bruksnummer: addrElement.bruksnummer,
-        festenummer: addrElement.festenummer,
-      };
+      return toPairedAddress(addrElement);
     }
   }
   return null;
@@ -105,20 +112,20 @@ async function updateMunicipality(adapter, muni, maxRetries = 8) {
       return false;
     }
 
-    let uuid;
+    let covered;
     try {
-      uuid = await adapter.adapter.fetchAddressUUID(addr);
+      covered = await adapter.adapter.coversAddress(addr);
     } catch (e) {
-      console.log(`  fetchAddressUUID failed: ${e.message}`);
+      console.log(`  coversAddress failed: ${e.message}`);
       return false;
     }
-    if (!uuid) continue;
+    if (!covered) continue;
 
     let fetchedDates;
     try {
-      fetchedDates = await adapter.adapter.fetchFractionDates(addr, uuid);
+      fetchedDates = await adapter.adapter.getFractionDates(addr);
     } catch (e) {
-      console.log(`  fetchFractionDates failed: ${e.message}`);
+      console.log(`  getFractionDates failed: ${e.message}`);
       return false;
     }
     const hasDate = fetchedDates && Object.values(fetchedDates).some((f) => f && f instanceof Date);
@@ -138,22 +145,22 @@ async function testMunicipality(adapter, muni) {
     console.log(`  Missing address for ${muni}, test fails.`);
     return false;
   }
-  let uuid;
+  let covered;
   try {
-    uuid = await adapter.adapter.fetchAddressUUID(addr);
+    covered = await adapter.adapter.coversAddress(addr);
   } catch (e) {
-    console.log(`  fetchAddressUUID failed: ${e.message}`);
+    console.log(`  coversAddress failed: ${e.message}`);
     return false;
   }
-  if (!uuid) {
-    console.log(`  Failed to get address UUID for address in ${muni}, test fails.`);
+  if (!covered) {
+    console.log(`  Address in ${muni} is not covered by the provider, test fails.`);
     return false;
   }
   let fetchedDates;
   try {
-    fetchedDates = await adapter.adapter.fetchFractionDates(addr, uuid);
+    fetchedDates = await adapter.adapter.getFractionDates(addr);
   } catch (e) {
-    console.log(`  fetchFractionDates failed: ${e.message}`);
+    console.log(`  getFractionDates failed: ${e.message}`);
     return false;
   }
   const hasDate = fetchedDates && Object.values(fetchedDates).some((f) => f && f instanceof Date);

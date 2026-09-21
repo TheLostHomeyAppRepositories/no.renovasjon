@@ -212,9 +212,7 @@ module.exports = class RenovasjonDevice extends Homey.Device {
 
   async updateData() {
     const addressData = this.getStoreValue('addressData');
-    const addressUUID = this.getStoreValue('addressUUID');
-
-    this.fractionDates = await this.adapter.fetchFractionDates(addressData, addressUUID);
+    this.fractionDates = await this.adapter.getFractionDates(addressData);
     this.nextPickup = this.getNextPickup(this.fractionDates);
     this.homey.api.realtime('dataUpdated', { deviceId: this.getId() });
   }
