@@ -36,12 +36,10 @@ module.exports = class RenovasjonDevice extends Homey.Device {
     this.adapter = this.driver.getAdapter(this.getStoreValue('provider'));
     // Update data if the device exists. If not it will be updated in onAdded() after setup.
     if (this.getStoreValue('deviceAdded')) {
-      // MIGRATION (cadastral fields)
-      // Runs in the background so it can never delay or break the rest of the setup
-      this.startCadastralMigration();
       await this.ensureCapabilities();
-      await this.updateData();
-      await this.updateCapabilities();
+      // update() has its own retry and backoff, and starts the cadastral migration itself, so a
+      // transient failure here (e.g. during provider rediscovery) can't fail device init outright.
+      await this.update();
     }
   }
 
