@@ -3,8 +3,14 @@
 const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('node:util');
+const { Listr } = require('listr2');
 const { adapters } = require('./adapters-config');
 const { normalizeCadastral } = require('../lib/geonorge');
+const report = require('./report');
+
+// How many adapters run at the same time. They mostly talk to different providers, but in update
+// mode they all share Geonorge, so this is kept low.
+const CONCURRENCY = 4;
 
 // --- Parse command line arguments ---
 let updateMode = false;
@@ -39,6 +45,13 @@ try {
   process.exit(1);
 }
 
+const unknownAdapters = (adapterFilter || []).filter((name) => !Object.hasOwn(adapters, name));
+if (unknownAdapters.length > 0) {
+  console.error(`Error: Unknown adapter: ${unknownAdapters.join(', ')}`);
+  console.log(`Available adapters: ${Object.keys(adapters).join(', ')}`);
+  process.exit(1);
+}
+
 const addressesFile = path.join(__dirname, 'valid-addresses.json');
 
 // The address data as the pair view and driver produce it, which is what the adapters get in
@@ -55,6 +68,14 @@ function toPairedAddress(address) {
     kommunenummer: text(address.kommunenummer),
   };
   return Object.assign(paired, normalizeCadastral(address));
+}
+
+function formatAddress(address) {
+  return `${address.adressenavn} ${address.nummer}${address.bokstav}`.trim();
+}
+
+function municipalityLabel(muni, address) {
+  return address && address.kommunenavn ? `${muni} ${address.kommunenavn}` : String(muni);
 }
 
 // --- Address storage ---
@@ -101,23 +122,34 @@ async function getRandomAddress(municipalityNumber, maxRetries = 5) {
   return null;
 }
 
-// --- Update and test logic ---
-async function updateMunicipality(adapter, muni, maxRetries = 8) {
-  console.log(`Updating address for ${adapter.adapter.getName()} kommune ${muni}...`);
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    console.log(`  Attempt number ${attempt + 1}...`);
+function randomElement(array) {
+  return array[Math.floor(Math.random() * array.length)];
+}
+
+// --- Update logic ---
+// The update and test functions don't print anything. They report how it is going through the
+// `update` callback (which changes the adapter's row) and return the failures they found, each
+// as { reason, label?, address? }, so an adapter has passed when it returns none.
+
+// Municipalities some adapter is looking for an address in right now. Several adapters can cover
+// the same municipality, and the first one to store an address gets it, as it did when the
+// adapters ran one after the other.
+const claimedMunicipalities = new Set();
+
+// Returns { addr } when an address was stored, otherwise { reason, label }.
+async function updateMunicipality(adapter, muni, progress, maxRetries = 8) {
+  let label = String(muni);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    progress(`${muni}, attempt ${attempt}/${maxRetries}`);
     const addr = await getRandomAddress(muni);
-    if (!addr) {
-      console.log(`  Failed to get random address for ${muni}`);
-      return false;
-    }
+    if (!addr) return { reason: 'Failed to get a random address', label };
+    label = municipalityLabel(muni, addr);
 
     let covered;
     try {
       covered = await adapter.adapter.coversAddress(addr);
     } catch (e) {
-      console.log(`  coversAddress failed: ${e.message}`);
-      return false;
+      return { reason: `coversAddress failed: ${e.message}`, label };
     }
     if (!covered) continue;
 
@@ -125,61 +157,98 @@ async function updateMunicipality(adapter, muni, maxRetries = 8) {
     try {
       fetchedDates = await adapter.adapter.getFractionDates(addr);
     } catch (e) {
-      console.log(`  getFractionDates failed: ${e.message}`);
-      return false;
+      return { reason: `getFractionDates failed: ${e.message}`, label };
     }
     const hasDate = fetchedDates && Object.values(fetchedDates).some((f) => f && f instanceof Date);
     if (!hasDate) continue;
     // OK – store
     addressStore.set(muni, addr);
-    console.log(`  Saved valid address for ${muni}: ${addr.adressenavn} ${addr.nummer}${addr.bokstav || ''}`);
-    return true;
+    return { addr };
   }
-  console.log(`  Failed to get random address for ${muni}`);
-  return false;
+  return { reason: `No working address found in ${maxRetries} attempts`, label };
 }
 
+async function updateAdapter(adapter, update) {
+  update({ progress: 'Getting municipalities' });
+  let supportedMunicipalities;
+  try {
+    supportedMunicipalities = await adapter.adapter._getAllMunicipalities();
+  } catch (e) {
+    return { failures: [{ reason: `Failed to get supported municipalities: ${e.message}` }] };
+  }
+
+  // Skip municipalities that already have an address in the file. If a previously working
+  // address stops working, manually remove it from the file.
+  let todo = [...supportedMunicipalities].filter((m) => !addressStore.has(m));
+  // When testAll.. is false, one of the municipalities missing from the file is enough.
+  if (!adapter.testAllMunicipalities && todo.length > 0) todo = [randomElement(todo)];
+  if (todo.length === 0) {
+    update({ progress: 'All municipalities already have an address' });
+    return { failures: [] };
+  }
+
+  const failures = [];
+  let saved = 0;
+  for (const [i, muni] of todo.entries()) {
+    // Another adapter may have stored an address since the list was made
+    if (addressStore.has(muni) || claimedMunicipalities.has(muni)) continue;
+    claimedMunicipalities.add(muni);
+    let outcome;
+    try {
+      outcome = await updateMunicipality(adapter, muni, (text) => {
+        update({ progress: `${i + 1}/${todo.length}: ${text}` });
+      });
+    } catch (e) {
+      outcome = { reason: e.message, label: String(muni) };
+    } finally {
+      claimedMunicipalities.delete(muni);
+    }
+    if (outcome.addr) {
+      saved++;
+    } else {
+      failures.push({ label: outcome.label, reason: outcome.reason });
+    }
+  }
+  update({ progress: `${saved} saved, ${failures.length} failed` });
+  return { failures };
+}
+
+// --- Test logic ---
+// Returns { nextPickup } when the address works, otherwise { failure }.
 async function testMunicipality(adapter, muni) {
   const addr = addressStore.get(muni);
   if (!addr) {
-    console.log(`  Missing address for ${muni}, test fails.`);
-    return false;
+    return { failure: { label: municipalityLabel(muni), reason: 'No address stored for the municipality' } };
   }
+  const fail = (reason) => ({
+    failure: { label: municipalityLabel(muni, addr), address: formatAddress(addr), reason },
+  });
+
   let covered;
   try {
     covered = await adapter.adapter.coversAddress(addr);
   } catch (e) {
-    console.log(`  coversAddress failed: ${e.message}`);
-    return false;
+    return fail(`coversAddress failed: ${e.message}`);
   }
-  if (!covered) {
-    console.log(`  Address in ${muni} is not covered by the provider, test fails.`);
-    return false;
-  }
+  if (!covered) return fail('The address is not covered by the provider');
+
   let fetchedDates;
   try {
     fetchedDates = await adapter.adapter.getFractionDates(addr);
   } catch (e) {
-    console.log(`  getFractionDates failed: ${e.message}`);
-    return false;
+    return fail(`getFractionDates failed: ${e.message}`);
   }
-  const hasDate = fetchedDates && Object.values(fetchedDates).some((f) => f && f instanceof Date);
-  if (!hasDate) {
-    console.log(`  Failed to get valid fraction dates for address in ${muni}, test fails.`);
-    return false;
-  }
-  const hasDateInFuture = Object.values(fetchedDates).some((f) => f && f > new Date());
-  if (!hasDateInFuture) {
-    console.log(`  No future fraction dates for address in ${muni}, test fails.`);
-    return false;
-  }
-  return true;
+  const dates = Object.values(fetchedDates || {}).filter((f) => f instanceof Date);
+  if (dates.length === 0) return fail('Failed to get valid fraction dates');
+  const now = new Date();
+  const futureDates = dates.filter((date) => date > now);
+  if (futureDates.length === 0) return fail('No future fraction dates');
+  return { nextPickup: new Date(Math.min(...futureDates)) };
 }
 
 // Test the interfacing from the driver
 async function testInterfacing(adapter, supportedMunicipalities) {
-  const randomIndex = Math.floor(Math.random() * supportedMunicipalities.size);
-  const randomSupportedMuni = [...supportedMunicipalities][randomIndex];
+  const randomSupportedMuni = randomElement([...supportedMunicipalities]);
   const nonSupportedMuni = '5000'; // Not supported because it doesn't exist
 
   const supportsSupported = await adapter.adapter.coversMunicipality(randomSupportedMuni);
@@ -187,82 +256,134 @@ async function testInterfacing(adapter, supportedMunicipalities) {
   return supportsSupported && !supportsNonSupported;
 }
 
-async function runTest(adapter) {
-  console.log(`\n=== Testing adapter: ${adapter.adapter.getName()} ===`);
+async function testAdapter(adapter, update) {
+  update({ interface: 'running' });
+  const interfaceFailure = (reason) => {
+    update({ interface: 'fail', fetch: 'skip' });
+    return { failures: [{ reason }] };
+  };
+
   let supportedMunicipalities;
   try {
     supportedMunicipalities = await adapter.adapter._getAllMunicipalities();
   } catch (e) {
-    console.log(`Failed to get supported municipalities: ${e.message}`);
-    return false;
+    return interfaceFailure(`Failed to get supported municipalities: ${e.message}`);
+  }
+  let interfaceOk;
+  try {
+    interfaceOk = await testInterfacing(adapter, supportedMunicipalities);
+  } catch (e) {
+    return interfaceFailure(`coversMunicipality failed: ${e.message}`);
+  }
+  if (!interfaceOk) {
+    return interfaceFailure('coversMunicipality does not agree with the municipality list');
+  }
+  update({ interface: 'ok', fetch: 'running' });
+
+  let toTest;
+  if (adapter.testAllMunicipalities && fullMode) {
+    toTest = [...supportedMunicipalities];
+  } else {
+    const candidates = [...supportedMunicipalities].filter((m) => addressStore.has(m));
+    if (candidates.length === 0) {
+      update({ fetch: 'skip' });
+      return { failures: [{ reason: 'No municipalities in address store' }] };
+    }
+    toTest = [randomElement(candidates)];
+  }
+  const many = toTest.length > 1;
+
+  const failures = [];
+  let nextPickup = null;
+  for (const [i, muni] of toTest.entries()) {
+    update({
+      municipality: many
+        ? `${i + 1}/${toTest.length} municipalities`
+        : municipalityLabel(muni, addressStore.get(muni)),
+    });
+    const outcome = await testMunicipality(adapter, muni);
+    if (outcome.failure) failures.push(outcome.failure);
+    else nextPickup = outcome.nextPickup;
   }
 
-  if (updateMode) {
-    if (adapter.testAllMunicipalities) {
-      for (const muni of supportedMunicipalities) {
-        // Skip if municipality already has an address in file. If a previously working
-        // address stops working, manually remove it from the file.
-        if (!addressStore.has(muni)) {
-          await updateMunicipality(adapter, muni);
-        }
-      }
-    } else {
-      // When testAll.. is false, find one of the supported municipalities that is
-      // missing from the file (if any).
-      const candidates = [...supportedMunicipalities].filter((m) => !addressStore.has(m));
-      if (candidates.length > 0) {
-        const randomMuni = candidates[Math.floor(Math.random() * candidates.length)];
-        await updateMunicipality(adapter, randomMuni);
-      } else {
-        console.log(`All municipalities already covered for ${adapter.adapter.getName()}`);
-      }
-    }
-    return true;
+  const patch = { fetch: failures.length > 0 ? 'fail' : 'ok' };
+  if (many) {
+    const failedText = failures.length > 0 ? `, ${failures.length} failed` : '';
+    patch.municipality = `${toTest.length} municipalities${failedText}`;
+  } else {
+    patch.pickup = report.formatPickup(nextPickup);
   }
-  const interfaceOk = await testInterfacing(adapter, supportedMunicipalities);
-  console.log(`Interface check: ${interfaceOk ? 'PASSED' : 'FAILED'}`);
-  if (!interfaceOk) {
-    return false;
-  }
-  if (adapter.testAllMunicipalities && fullMode) {
-    let success = true;
-    for (const muni of supportedMunicipalities) {
-      const ok = await testMunicipality(adapter, muni);
-      console.log(`Municipality ${muni}: ${ok ? 'PASSED' : 'FAILED'}`);
-      success = success && ok;
-    }
-    return success;
-  }
-  const candidates = [...supportedMunicipalities].filter((m) => addressStore.has(m));
-  if (candidates.length === 0) {
-    console.log(`${adapter.adapter.getName()}: No municipalities in address store!`);
-    return false;
-  }
-  const randomMuni = candidates[Math.floor(Math.random() * candidates.length)];
-  const ok = await testMunicipality(adapter, randomMuni);
-  console.log(`${adapter.adapter.getName()} ${randomMuni}: ${ok ? 'PASSED' : 'FAILED'}`);
-  return ok;
+  update(patch);
+  return { failures };
 }
 
 async function runAllTests() {
-  let passed = 0;
-  let failed = 0;
-  for (const [name, adapter] of Object.entries(adapters)) {
-    if (adapterFilter && !adapterFilter.includes(name)) continue;
-    const result = await runTest(adapter);
-    if (result) passed++;
-    else failed++;
-  }
-  console.log(`Total adapters tested: ${passed + failed}`);
-  console.log(`Passed: ${passed}, Failed: ${failed}`);
+  const selected = Object.entries(adapters)
+    .filter(([name]) => !adapterFilter || adapterFilter.includes(name));
+  const nameWidth = Math.max('Adapter'.length, ...selected.map(([name]) => name.length));
+  const table = updateMode ? report.updateTable : report.testTable;
+  const runAdapter = updateMode ? updateAdapter : testAdapter;
+  // Listr2 redraws the rows in place on a terminal. Otherwise (piped output, CI) it stays silent
+  // and each row is printed once, when its adapter is done.
+  const live = Boolean(process.stdout.isTTY);
+
+  const results = new Map();
+  const tasks = selected.map(([name, adapter]) => {
+    const view = table.newView(name);
+    return {
+      title: table.row(nameWidth, view),
+      task: async (ctx, task) => {
+        const update = (patch) => {
+          Object.assign(view, patch);
+          task.title = table.row(nameWidth, view);
+        };
+        const started = Date.now();
+        update({ queued: false });
+        let outcome;
+        try {
+          outcome = await runAdapter(adapter, update);
+        } catch (e) {
+          outcome = { failures: [{ reason: e.message }] };
+        }
+        update({ ms: Date.now() - started });
+
+        results.set(name, { name, failures: outcome.failures });
+        const ok = outcome.failures.length === 0;
+        if (!live) console.log(`${report.icon(ok)} ${table.row(nameWidth, view)}`);
+        // The reason is shown in the summary, but Listr2 needs the error to mark the row failed
+        if (!ok) throw new Error(outcome.failures[0].reason);
+      },
+    };
+  });
+
+  const started = Date.now();
+  console.log(table.header(nameWidth));
+  await new Listr(tasks, {
+    concurrent: CONCURRENCY,
+    exitOnError: false,
+    renderer: live ? 'default' : 'silent',
+    fallbackRenderer: 'silent',
+    fallbackRendererCondition: false,
+    rendererOptions: { formatOutput: 'truncate', showErrorMessage: false },
+  }).run();
+
+  // In the order of the adapters, not of when they finished
+  const ordered = selected.map(([name]) => results.get(name));
+  report.printSummary(ordered, Date.now() - started, updateMode ? 'complete' : 'passed');
+  const failed = ordered.filter((result) => result.failures.length > 0).length;
+  return { passed: ordered.length - failed, failed };
 }
 
 // Run all test if executed directly
 if (require.main === module) {
-  runAllTests().catch((err) => {
-    console.error(err);
-    process.exitCode = 1;
-  });
+  runAllTests()
+    .then(({ failed }) => {
+      process.exitCode = failed > 0 ? 1 : 0;
+    })
+    .catch((err) => {
+      console.error(err);
+      process.exitCode = 1;
+    });
 }
 
 module.exports = { runAllTests };
