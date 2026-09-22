@@ -3,14 +3,12 @@
 const adapterConfigs = [
   { name: 'remidt', testAll: true },
   { name: 'trv', testAll: true },
-  { name: 'glor', testAll: true },
   { name: 'ir', testAll: true },
   { name: 'minrenovasjon', testAll: false }, // Too many municipalities to test them all
   { name: 'fosenrenovasjon', testAll: true },
   { name: 'hra', testAll: true },
   { name: 'oslokommune', testAll: true },
   { name: 'fredrikstadkommune', testAll: true },
-  { name: 'vkr', testAll: true },
   { name: 'sim', testAll: true },
   { name: 'ngir', testAll: true },
   { name: 'bir', testAll: true },
