@@ -214,9 +214,46 @@ module.exports = class RenovasjonDevice extends Homey.Device {
 
   async updateData() {
     const addressData = this.getStoreValue('addressData');
-    this.fractionDates = await this.adapter.getFractionDates(addressData);
+    // If the provider is null, it has been deleted, so rediscover the appropriate one.
+    if (!this.adapter) {
+      await this.switchProvider(addressData);
+    }
+    try {
+      this.fractionDates = await this.adapter.getFractionDates(addressData);
+    } catch (error) {
+      if (!(error instanceof AddressNotFoundError)) {
+        throw error;
+      }
+      // The provider may have stopped covering this municipality, e.g. replaced by a dedicated
+      // adapter. Check, and switch and retry once if so. A check failure is treated as "still
+      // covers", so an ambiguous signal doesn't mask a real address-not-found.
+      const stillCovers = await this.adapter.coversMunicipality(addressData.kommunenummer).catch(() => true);
+      if (stillCovers) {
+        throw error;
+      }
+      await this.switchProvider(addressData);
+      this.fractionDates = await this.adapter.getFractionDates(addressData);
+    }
     this.nextPickup = this.getNextPickup(this.fractionDates);
     this.homey.api.realtime('dataUpdated', { deviceId: this.getId() });
+  }
+
+  // Rediscovers and stores the provider for the address's municipality, updating both the store
+  // (used by getAdapter()) and the settings label (shown to the user). Throws AddressNotFoundError
+  // if nothing covers it, which the caller already treats as "don't retry immediately".
+  async switchProvider(addressData) {
+    const provider = await this.driver.getProviderForMunicipality(addressData.kommunenummer);
+    if (!provider) {
+      throw new AddressNotFoundError(`No provider covers municipality ${addressData.kommunenummer}`);
+    }
+    if (provider !== this.getStoreValue('provider')) {
+      this.log(`Switching provider from ${this.getStoreValue('provider') || '(none)'} to ${provider}`);
+    }
+    await this.setStoreValue('provider', provider);
+    this.adapter = this.driver.getAdapter(provider);
+    await this.setSettings({ provider: this.adapter.getName() }).catch((error) => {
+      this.error('Could not update the provider setting:', error.message);
+    });
   }
 
   // MIGRATION (cadastral fields): the three methods below, startCadastralMigration(),
