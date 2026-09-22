@@ -5,13 +5,17 @@ const Homey = require('homey');
 const { normalizeCadastral } = require('../../lib/geonorge');
 
 // Adapters are required lazily, so only the ones actually in use get loaded.
+//
+// Order matters: getProviderForMunicipality() returns the first adapter that covers a
+// municipality, and some municipalities are covered by both a dedicated adapter and Min
+// Renovasjon's national aggregator. minrenovasjon is listed last so a dedicated adapter always
+// wins where both cover the same municipality.
 /* eslint-disable global-require */
 const ADAPTER_FACTORIES = {
   remidt: () => new (require('../../lib/adapters/remidt'))(),
   trv: () => new (require('../../lib/adapters/trv'))(),
   glor: () => new (require('../../lib/adapters/glor'))(),
   ir: () => new (require('../../lib/adapters/ir'))(),
-  minrenovasjon: () => new (require('../../lib/adapters/minrenovasjon'))(),
   fosenrenovasjon: () => new (require('../../lib/adapters/fosenrenovasjon'))(),
   hra: () => new (require('../../lib/adapters/hra'))(),
   oslokommune: () => new (require('../../lib/adapters/oslokommune'))(),
@@ -35,6 +39,7 @@ const ADAPTER_FACTORIES = {
   sor: () => new (require('../../lib/adapters/sor'))(),
   las: () => new (require('../../lib/adapters/las'))(),
   karmoykommune: () => new (require('../../lib/adapters/karmoykommune'))(),
+  minrenovasjon: () => new (require('../../lib/adapters/minrenovasjon'))(),
 };
 /* eslint-enable global-require */
 
